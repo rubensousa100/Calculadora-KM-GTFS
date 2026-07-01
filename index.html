@@ -1,0 +1,945 @@
+<!DOCTYPE html>
+<html lang="pt">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GTFS → km de serviço</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
+<style>
+  :root{
+    --ink:#12151C;
+    --panel:#1B1F2A;
+    --slat:#232838;
+    --slat-edge:#2E3548;
+    --amber:#FFB020;
+    --green:#3DDC84;
+    --coral:#FF6B5E;
+    --text:#EDEFF5;
+    --muted:#838DA3;
+    --line:#2A3040;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--ink);
+    color:var(--text);
+    font-family:'Inter',system-ui,sans-serif;
+    line-height:1.5;
+    min-height:100vh;
+  }
+  ::selection{background:var(--amber);color:#1a1408;}
+
+  .wrap{max-width:980px;margin:0 auto;padding:56px 24px 100px;}
+
+  .eyebrow{
+    font-family:'JetBrains Mono',monospace;
+    font-size:12px;
+    letter-spacing:0.14em;
+    text-transform:uppercase;
+    color:var(--amber);
+    display:flex;
+    align-items:center;
+    gap:8px;
+    margin-bottom:14px;
+  }
+  .eyebrow::before{
+    content:'';
+    width:7px;height:7px;
+    background:var(--amber);
+    display:inline-block;
+    border-radius:1px;
+  }
+
+  h1{
+    font-family:'Space Grotesk',sans-serif;
+    font-weight:700;
+    font-size:clamp(32px,5vw,46px);
+    line-height:1.05;
+    margin:0 0 14px;
+    letter-spacing:-0.01em;
+  }
+  h1 span{color:var(--amber);}
+
+  .lede{
+    color:var(--muted);
+    font-size:15.5px;
+    max-width:560px;
+    margin:0 0 40px;
+  }
+
+  /* ---- Split-flap summary board ---- */
+  .board{
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:14px;
+    padding:28px;
+    margin-bottom:36px;
+    display:grid;
+    grid-template-columns:repeat(4,1fr);
+    gap:20px;
+  }
+  @media(max-width:900px){ .board{grid-template-columns:repeat(2,1fr);} }
+  @media(max-width:640px){ .board{grid-template-columns:1fr;} }
+
+  .flap-value.warn-val{color:var(--coral);border-color:rgba(255,107,94,0.35);}
+
+  .flap-cell{text-align:left;}
+  .flap-label{
+    font-family:'JetBrains Mono',monospace;
+    font-size:11px;
+    letter-spacing:0.1em;
+    text-transform:uppercase;
+    color:var(--muted);
+    margin-bottom:10px;
+  }
+  .flap-value{
+    font-family:'JetBrains Mono',monospace;
+    font-weight:700;
+    font-size:clamp(22px,3.4vw,32px);
+    color:var(--text);
+    background:var(--slat);
+    border:1px solid var(--slat-edge);
+    border-radius:8px;
+    padding:14px 16px;
+    position:relative;
+    overflow:hidden;
+    letter-spacing:0.02em;
+  }
+  .flap-value::after{
+    content:'';
+    position:absolute;
+    left:0;right:0;top:50%;
+    height:1px;
+    background:rgba(0,0,0,0.35);
+  }
+  .flap-value.pending{color:var(--muted);}
+  .flap-value.ok{color:var(--green);border-color:rgba(61,220,132,0.35);}
+  .flap-sub{font-size:11px;color:var(--muted);margin-top:8px;font-family:'JetBrains Mono',monospace;}
+
+  /* ---- Drop zone ---- */
+  .dropzone{
+    border:1.5px dashed var(--line);
+    border-radius:14px;
+    padding:34px 24px;
+    text-align:center;
+    cursor:pointer;
+    transition:border-color .15s, background .15s;
+    margin-bottom:22px;
+  }
+  .dropzone:hover, .dropzone.drag{
+    border-color:var(--amber);
+    background:rgba(255,176,32,0.05);
+  }
+  .dropzone p{margin:0;color:var(--muted);font-size:14px;}
+  .dropzone strong{color:var(--text);font-weight:600;}
+  input[type=file]{display:none;}
+
+  /* ---- Ticket cards (per file) ---- */
+  .tickets{display:flex;flex-direction:column;gap:12px;margin-bottom:24px;}
+  .ticket{
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:10px;
+    display:flex;
+    align-items:center;
+    gap:16px;
+    padding:14px 18px;
+    position:relative;
+  }
+  .ticket::before{
+    content:'';
+    position:absolute;
+    left:0;top:0;bottom:0;
+    width:4px;
+    background:var(--amber);
+    border-radius:10px 0 0 10px;
+  }
+  .ticket .fname{
+    font-weight:600;
+    font-size:14px;
+    flex:1 1 200px;
+    min-width:0;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    white-space:nowrap;
+  }
+  .ticket .meta{
+    font-family:'JetBrains Mono',monospace;
+    font-size:12px;
+    color:var(--muted);
+  }
+  .ticket .dates{
+    display:flex;
+    gap:8px;
+    align-items:center;
+    flex:0 0 auto;
+  }
+  .ticket input[type=date]{
+    background:var(--slat);
+    border:1px solid var(--slat-edge);
+    color:var(--text);
+    font-family:'JetBrains Mono',monospace;
+    font-size:12.5px;
+    padding:6px 8px;
+    border-radius:6px;
+  }
+  .ticket .remove{
+    background:none;border:none;color:var(--muted);
+    cursor:pointer;font-size:18px;line-height:1;padding:4px 6px;
+    border-radius:6px;
+  }
+  .ticket .remove:hover{color:var(--coral);background:rgba(255,107,94,0.08);}
+
+  .warn{
+    background:rgba(255,107,94,0.08);
+    border:1px solid rgba(255,107,94,0.35);
+    color:#ffb6ae;
+    padding:12px 16px;
+    border-radius:10px;
+    font-size:13.5px;
+    margin-bottom:20px;
+    display:none;
+  }
+  .warn.show{display:block;}
+
+  .controls{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    flex-wrap:wrap;
+    gap:14px;
+    margin-bottom:28px;
+  }
+  .toggle{
+    display:flex;align-items:center;gap:8px;
+    font-size:13.5px;color:var(--muted);
+    font-family:'JetBrains Mono',monospace;
+  }
+
+  button.primary{
+    background:var(--amber);
+    color:#1a1408;
+    border:none;
+    font-family:'Space Grotesk',sans-serif;
+    font-weight:700;
+    font-size:15px;
+    padding:13px 26px;
+    border-radius:9px;
+    cursor:pointer;
+    transition:transform .1s, box-shadow .15s;
+  }
+  button.primary:hover{box-shadow:0 6px 20px rgba(255,176,32,0.25);}
+  button.primary:active{transform:translateY(1px);}
+  button.primary:disabled{opacity:0.4;cursor:not-allowed;box-shadow:none;}
+
+  button.ghost{
+    background:none;
+    border:1px solid var(--line);
+    color:var(--text);
+    font-family:'Inter',sans-serif;
+    font-size:13px;
+    font-weight:500;
+    padding:9px 16px;
+    border-radius:8px;
+    cursor:pointer;
+  }
+  button.ghost:hover{border-color:var(--amber);color:var(--amber);}
+
+  .status{
+    font-family:'JetBrains Mono',monospace;
+    font-size:12.5px;
+    color:var(--muted);
+    margin-top:10px;
+  }
+
+  /* ---- Results table ---- */
+  .results-head{
+    display:flex;align-items:center;justify-content:space-between;
+    margin:44px 0 14px;
+  }
+  .results-head h2{
+    font-family:'Space Grotesk',sans-serif;
+    font-size:19px;
+    margin:0;
+  }
+  table{
+    width:100%;
+    border-collapse:collapse;
+    font-size:13.5px;
+  }
+  thead th{
+    text-align:left;
+    font-family:'JetBrains Mono',monospace;
+    font-size:11px;
+    letter-spacing:0.06em;
+    text-transform:uppercase;
+    color:var(--muted);
+    padding:10px 12px;
+    border-bottom:1px solid var(--line);
+    cursor:pointer;
+    user-select:none;
+    white-space:nowrap;
+  }
+  thead th:hover{color:var(--amber);}
+  thead th.num, tbody td.num{text-align:right;}
+  tbody td{
+    padding:10px 12px;
+    border-bottom:1px solid var(--line);
+    font-family:'JetBrains Mono',monospace;
+  }
+  tbody td.route{font-family:'Inter',sans-serif;font-weight:500;}
+  tbody tr:hover{background:rgba(255,255,255,0.02);}
+  tfoot td{
+    padding:12px;
+    font-family:'JetBrains Mono',monospace;
+    font-weight:700;
+    border-top:2px solid var(--line);
+    color:var(--amber);
+  }
+
+  .empty{
+    color:var(--muted);
+    font-size:13.5px;
+    padding:30px 0;
+    text-align:center;
+  }
+
+  /* ---- Contract section ---- */
+  .contract-box{
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:12px;
+    padding:20px 22px;
+    margin-bottom:28px;
+  }
+  .contract-box h3{
+    font-family:'Space Grotesk',sans-serif;
+    font-size:15px;
+    margin:0 0 4px;
+  }
+  .contract-box .hint{
+    color:var(--muted);
+    font-size:13px;
+    margin:0 0 16px;
+  }
+  .contract-row{
+    display:flex;
+    align-items:center;
+    gap:14px;
+    flex-wrap:wrap;
+  }
+  .contract-row label{
+    font-family:'JetBrains Mono',monospace;
+    font-size:12px;
+    color:var(--muted);
+    text-transform:uppercase;
+    letter-spacing:0.06em;
+  }
+  .contract-row input[type=number]{
+    background:var(--slat);
+    border:1px solid var(--slat-edge);
+    color:var(--text);
+    font-family:'JetBrains Mono',monospace;
+    font-size:14px;
+    padding:9px 12px;
+    border-radius:7px;
+    width:180px;
+  }
+  .contract-row select{
+    background:var(--slat);
+    border:1px solid var(--slat-edge);
+    color:var(--text);
+    font-family:'Inter',sans-serif;
+    font-size:13px;
+    padding:9px 10px;
+    border-radius:7px;
+  }
+  .contract-import{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    margin-left:auto;
+  }
+  .contract-import input[type=file]{display:none;}
+  .lote-tag{
+    font-family:'JetBrains Mono',monospace;
+    font-size:11.5px;
+    color:var(--muted);
+  }
+
+  footer{
+    margin-top:60px;
+    padding-top:24px;
+    border-top:1px solid var(--line);
+    color:var(--muted);
+    font-size:12.5px;
+    font-family:'JetBrains Mono',monospace;
+    display:flex;
+    justify-content:space-between;
+    flex-wrap:wrap;
+    gap:10px;
+  }
+  a{color:var(--amber);}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="eyebrow">GTFS SERVICE-KM</div>
+  <h1>Quantos <span>km</span> a rede corre?</h1>
+  <p class="lede">Arrasta um ou vários feeds GTFS — um por mês, por exemplo — e a ferramenta soma a quilometragem de serviço real por linha, sem extrapolações. Tudo corre no teu browser; nenhum ficheiro é enviado para fora.</p>
+
+  <div class="board">
+    <div class="flap-cell">
+      <div class="flap-label">Km de serviço total</div>
+      <div class="flap-value pending" id="totalKm">— — —</div>
+      <div class="flap-sub" id="totalKmSub">aguarda cálculo</div>
+    </div>
+    <div class="flap-cell">
+      <div class="flap-label">Dias cobertos</div>
+      <div class="flap-value pending" id="totalDays">— — —</div>
+      <div class="flap-sub" id="totalDaysSub">0 ficheiros carregados</div>
+    </div>
+    <div class="flap-cell">
+      <div class="flap-label">Cobertura do ano</div>
+      <div class="flap-value pending" id="yearCoverage">— — —</div>
+      <div class="flap-sub" id="yearCoverageSub">de 365 dias</div>
+    </div>
+    <div class="flap-cell">
+      <div class="flap-label">Execução do contrato</div>
+      <div class="flap-value pending" id="contractPct">— — —</div>
+      <div class="flap-sub" id="contractPctSub">define o km contratualizado abaixo</div>
+    </div>
+  </div>
+
+  <div class="contract-box">
+    <h3>Km contratualizado</h3>
+    <p class="hint">Os valores por Lote já vêm pré-carregados do caderno de encargos (fixos para toda a concessão). Escolhe o Lote, ou insere manualmente outro valor.</p>
+    <div class="contract-row">
+      <label>Km/ano contratado</label>
+      <input type="number" id="contractedKm" placeholder="ex: 1740063">
+      <div class="contract-import">
+        <span class="lote-tag" id="loteTag"></span>
+        <select id="loteSelect" style="display:none;"></select>
+      </div>
+    </div>
+  </div>
+
+  <div class="dropzone" id="dropzone">
+    <p><strong>Arrasta ficheiros .zip GTFS</strong> ou clica para escolher</p>
+    <p style="margin-top:6px;">Podes carregar vários de uma vez — um por mês, por trimestre, etc.</p>
+    <input type="file" id="fileInput" accept=".zip" multiple>
+  </div>
+
+  <div class="warn" id="overlapWarn"></div>
+
+  <div class="tickets" id="tickets"></div>
+
+  <div class="controls">
+    <label class="toggle">
+      <input type="checkbox" id="annualize"> anualizar cada ficheiro (×365/dias do período) — usa só se tiveres um único mês a representar o ano
+    </label>
+    <button class="primary" id="calcBtn" disabled>Calcular km de serviço</button>
+  </div>
+
+  <div class="status" id="status"></div>
+
+  <div class="results-head">
+    <h2>Km por linha</h2>
+    <button class="ghost" id="exportBtn" style="display:none;">Exportar CSV</button>
+  </div>
+  <div id="resultsWrap">
+    <div class="empty">Ainda sem resultados — carrega pelo menos um GTFS e clica em calcular.</div>
+  </div>
+
+  <footer>
+    <span>Processamento 100% local · nenhum ficheiro sai do browser</span>
+    <span>método: shape_dist_traveled × dias ativos por service_id</span>
+  </footer>
+
+</div>
+
+<script>
+const state = { files: [] }; // {id, name, zip, startDate, endDate, minDate, maxDate}
+let results = null; // {byRoute: Map, totalKm, totalDays}
+let sortKey = 'km', sortDir = 'desc';
+
+const dropzone = document.getElementById('dropzone');
+const fileInput = document.getElementById('fileInput');
+const ticketsEl = document.getElementById('tickets');
+const calcBtn = document.getElementById('calcBtn');
+const statusEl = document.getElementById('status');
+const overlapWarn = document.getElementById('overlapWarn');
+const resultsWrap = document.getElementById('resultsWrap');
+const exportBtn = document.getElementById('exportBtn');
+
+dropzone.addEventListener('click', () => fileInput.click());
+dropzone.addEventListener('dragover', e => { e.preventDefault(); dropzone.classList.add('drag'); });
+dropzone.addEventListener('dragleave', () => dropzone.classList.remove('drag'));
+dropzone.addEventListener('drop', e => {
+  e.preventDefault();
+  dropzone.classList.remove('drag');
+  handleFiles(e.dataTransfer.files);
+});
+fileInput.addEventListener('change', e => handleFiles(e.target.files));
+
+async function handleFiles(fileList){
+  for(const f of fileList){
+    if(!f.name.toLowerCase().endsWith('.zip')) continue;
+    const id = 'f' + Math.random().toString(36).slice(2,9);
+    const entry = { id, name: f.name, file: f, startDate:null, endDate:null, minDate:null, maxDate:null, loading:true };
+    state.files.push(entry);
+    renderTickets();
+    try{
+      const zip = await JSZip.loadAsync(f);
+      entry.zip = zip;
+      const range = await detectDateRange(zip);
+      entry.startDate = range.start;
+      entry.endDate = range.end;
+      entry.minDate = range.min;
+      entry.maxDate = range.max;
+    }catch(err){
+      entry.error = 'erro ao ler zip';
+      console.error(err);
+    }
+    entry.loading = false;
+    renderTickets();
+  }
+  checkOverlaps();
+  calcBtn.disabled = state.files.length === 0;
+}
+
+async function readCsv(zip, name){
+  const fileObj = zip.file(new RegExp('(^|/)' + name + '$', 'i'))[0];
+  if(!fileObj) return null;
+  const text = await fileObj.async('string');
+  const parsed = Papa.parse(text, { header:true, skipEmptyLines:true, dynamicTyping:false });
+  return parsed.data;
+}
+
+async function detectDateRange(zip){
+  // try feed_info.txt first
+  const feedInfo = await readCsv(zip, 'feed_info.txt');
+  if(feedInfo && feedInfo[0] && feedInfo[0].feed_start_date && feedInfo[0].feed_end_date){
+    const s = feedInfo[0].feed_start_date, e = feedInfo[0].feed_end_date;
+    return { start: toDateStr(s), end: toDateStr(e), min: toDateStr(s), max: toDateStr(e) };
+  }
+  const cal = await readCsv(zip, 'calendar.txt');
+  let min = null, max = null;
+  if(cal){
+    for(const row of cal){
+      if(row.start_date && (!min || row.start_date < min)) min = row.start_date;
+      if(row.end_date && (!max || row.end_date > max)) max = row.end_date;
+    }
+  }
+  const calDates = await readCsv(zip, 'calendar_dates.txt');
+  if(calDates){
+    for(const row of calDates){
+      if(row.date){
+        if(!min || row.date < min) min = row.date;
+        if(!max || row.date > max) max = row.date;
+      }
+    }
+  }
+  if(!min || !max){ min = '20260101'; max = '20261231'; }
+  return { start: toDateStr(min), end: toDateStr(max), min: toDateStr(min), max: toDateStr(max) };
+}
+
+function toDateStr(yyyymmdd){
+  // yyyymmdd string -> YYYY-MM-DD
+  const s = String(yyyymmdd).trim();
+  if(s.length !== 8) return s;
+  return s.slice(0,4) + '-' + s.slice(4,6) + '-' + s.slice(6,8);
+}
+function toGtfsDate(dateStr){
+  return dateStr.replaceAll('-','');
+}
+
+function renderTickets(){
+  ticketsEl.innerHTML = '';
+  for(const entry of state.files){
+    const div = document.createElement('div');
+    div.className = 'ticket';
+    if(entry.loading){
+      div.innerHTML = `<div class="fname">${escapeHtml(entry.name)}</div><div class="meta">a ler…</div>`;
+    } else if(entry.error){
+      div.innerHTML = `<div class="fname">${escapeHtml(entry.name)}</div><div class="meta" style="color:var(--coral)">${entry.error}</div>
+        <button class="remove" data-id="${entry.id}">×</button>`;
+    } else {
+      div.innerHTML = `
+        <div class="fname">${escapeHtml(entry.name)}</div>
+        <div class="dates">
+          <input type="date" class="start" data-id="${entry.id}" value="${entry.startDate}">
+          <span class="meta">→</span>
+          <input type="date" class="end" data-id="${entry.id}" value="${entry.endDate}">
+        </div>
+        <button class="remove" data-id="${entry.id}" title="remover">×</button>
+      `;
+    }
+    ticketsEl.appendChild(div);
+  }
+  ticketsEl.querySelectorAll('.remove').forEach(btn => {
+    btn.addEventListener('click', () => {
+      state.files = state.files.filter(f => f.id !== btn.dataset.id);
+      renderTickets();
+      checkOverlaps();
+      calcBtn.disabled = state.files.length === 0;
+    });
+  });
+  ticketsEl.querySelectorAll('input.start').forEach(inp => {
+    inp.addEventListener('change', () => {
+      const e = state.files.find(f => f.id === inp.dataset.id);
+      if(e) e.startDate = inp.value;
+      checkOverlaps();
+    });
+  });
+  ticketsEl.querySelectorAll('input.end').forEach(inp => {
+    inp.addEventListener('change', () => {
+      const e = state.files.find(f => f.id === inp.dataset.id);
+      if(e) e.endDate = inp.value;
+      checkOverlaps();
+    });
+  });
+}
+
+function checkOverlaps(){
+  const valid = state.files.filter(f => f.startDate && f.endDate);
+  let overlapMsgs = [];
+  for(let i=0;i<valid.length;i++){
+    for(let j=i+1;j<valid.length;j++){
+      const a = valid[i], b = valid[j];
+      if(a.startDate <= b.endDate && b.startDate <= a.endDate){
+        overlapMsgs.push(`"${a.name}" e "${b.name}" têm períodos sobrepostos — os km desses dias serão contados a dobrar.`);
+      }
+    }
+  }
+  if(overlapMsgs.length){
+    overlapWarn.classList.add('show');
+    overlapWarn.innerHTML = '⚠️ ' + overlapMsgs.join('<br>⚠️ ');
+  } else {
+    overlapWarn.classList.remove('show');
+  }
+}
+
+function escapeHtml(s){
+  return s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// ---- Core GTFS calculation ----
+
+function dateRangeDays(startStr, endStr){
+  const days = [];
+  let d = new Date(startStr + 'T00:00:00');
+  const end = new Date(endStr + 'T00:00:00');
+  while(d <= end){
+    days.push(new Date(d));
+    d.setDate(d.getDate() + 1);
+  }
+  return days;
+}
+
+const DOW = ['sunday','monday','tuesday','wednesday','thursday','friday','saturday'];
+
+async function processFile(entry){
+  const zip = entry.zip;
+  const [trips, stopTimes, calendar, calendarDates, shapes, routes] = await Promise.all([
+    readCsv(zip, 'trips.txt'),
+    readCsv(zip, 'stop_times.txt'),
+    readCsv(zip, 'calendar.txt'),
+    readCsv(zip, 'calendar_dates.txt'),
+    readCsv(zip, 'shapes.txt'),
+    readCsv(zip, 'routes.txt'),
+  ]);
+
+  if(!trips || !stopTimes) throw new Error('faltam trips.txt ou stop_times.txt');
+
+  // route lookup
+  const routeName = {};
+  if(routes){
+    for(const r of routes){
+      routeName[r.route_id] = r.route_short_name || r.route_long_name || r.route_id;
+    }
+  }
+
+  // trip -> route, service
+  const tripInfo = {};
+  for(const t of trips){
+    tripInfo[t.trip_id] = { route_id: t.route_id, service_id: t.service_id };
+  }
+
+  // distance per trip via max shape_dist_traveled in stop_times
+  const tripDist = {};
+  const tripsNeedingShape = new Set();
+  for(const st of stopTimes){
+    const tid = st.trip_id;
+    const v = parseFloat(st.shape_dist_traveled);
+    if(!isNaN(v)){
+      if(!(tid in tripDist) || v > tripDist[tid]) tripDist[tid] = v;
+    }
+  }
+  for(const tid in tripInfo){
+    if(!(tid in tripDist)) tripsNeedingShape.add(tid);
+  }
+
+  // fallback: shape length from shapes.txt (haversine sum), mapped by shape_id
+  let shapeLen = {};
+  if(tripsNeedingShape.size > 0 && shapes){
+    const byShape = {};
+    for(const s of shapes){
+      const sid = s.shape_id;
+      if(!byShape[sid]) byShape[sid] = [];
+      byShape[sid].push({ seq: parseInt(s.shape_pt_sequence), lat: parseFloat(s.shape_pt_lat), lon: parseFloat(s.shape_pt_lon) });
+    }
+    for(const sid in byShape){
+      const pts = byShape[sid].sort((a,b)=>a.seq-b.seq);
+      let len = 0;
+      for(let i=1;i<pts.length;i++) len += haversine(pts[i-1], pts[i]);
+      shapeLen[sid] = len; // km
+    }
+    // need trip -> shape_id
+    const tripShape = {};
+    for(const t of trips) tripShape[t.trip_id] = t.shape_id;
+    for(const tid of tripsNeedingShape){
+      const sid = tripShape[tid];
+      if(sid && shapeLen[sid] != null) tripDist[tid] = shapeLen[sid] * 1000; // store in meters to match unit below
+    }
+  }
+
+  // determine unit: GTFS shape_dist_traveled unit is whatever the feed uses (often km already, sometimes meters).
+  // Heuristic: if median value > 1000, assume meters; else assume km already.
+  const distVals = Object.values(tripDist).filter(v=>v>0);
+  distVals.sort((a,b)=>a-b);
+  const median = distVals.length ? distVals[Math.floor(distVals.length/2)] : 0;
+  const isMeters = median > 300; // typical bus trip is a few km; if median > 300 assume meters
+  const unitDivisor = isMeters ? 1000 : 1;
+
+  // service_id -> set of active date strings (yyyymmdd), restricted to entry period
+  const periodStart = toGtfsDate(entry.startDate);
+  const periodEnd = toGtfsDate(entry.endDate);
+  const periodDays = dateRangeDays(entry.startDate, entry.endDate);
+
+  const calByService = {};
+  if(calendar){
+    for(const c of calendar) calByService[c.service_id] = c;
+  }
+  const exceptionsByService = {};
+  if(calendarDates){
+    for(const cd of calendarDates){
+      if(!exceptionsByService[cd.service_id]) exceptionsByService[cd.service_id] = {};
+      exceptionsByService[cd.service_id][cd.date] = parseInt(cd.exception_type);
+    }
+  }
+
+  const activeDaysCount = {}; // service_id -> count within period
+  const allServiceIds = new Set([...Object.keys(calByService), ...Object.keys(exceptionsByService)]);
+
+  for(const serviceId of allServiceIds){
+    let count = 0;
+    const cal = calByService[serviceId];
+    const exceptions = exceptionsByService[serviceId] || {};
+    for(const day of periodDays){
+      const ymd = day.getFullYear().toString() + String(day.getMonth()+1).padStart(2,'0') + String(day.getDate()).padStart(2,'0');
+      if(ymd < periodStart || ymd > periodEnd) continue;
+      let active = false;
+      if(cal && ymd >= cal.start_date && ymd <= cal.end_date){
+        const dowName = DOW[day.getDay()];
+        active = cal[dowName] === '1';
+      }
+      if(exceptions[ymd] === 1) active = true;
+      if(exceptions[ymd] === 2) active = false;
+      if(active) count++;
+    }
+    activeDaysCount[serviceId] = count;
+  }
+
+  // aggregate km by route
+  const byRoute = {}; // route_id -> km
+  for(const tid in tripInfo){
+    const { route_id, service_id } = tripInfo[tid];
+    const dist = (tripDist[tid] || 0) / unitDivisor; // km
+    const days = activeDaysCount[service_id] || 0;
+    if(dist <= 0 || days <= 0) continue;
+    byRoute[route_id] = (byRoute[route_id] || 0) + dist * days;
+  }
+
+  const totalKm = Object.values(byRoute).reduce((a,b)=>a+b, 0);
+
+  return { byRoute, routeName, totalKm, days: periodDays.length };
+}
+
+function haversine(p1, p2){
+  const R = 6371; // km
+  const dLat = (p2.lat - p1.lat) * Math.PI/180;
+  const dLon = (p2.lon - p1.lon) * Math.PI/180;
+  const a = Math.sin(dLat/2)**2 + Math.cos(p1.lat*Math.PI/180)*Math.cos(p2.lat*Math.PI/180)*Math.sin(dLon/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+calcBtn.addEventListener('click', async () => {
+  const valid = state.files.filter(f => f.zip && f.startDate && f.endDate);
+  if(valid.length === 0) return;
+  calcBtn.disabled = true;
+  statusEl.textContent = 'a calcular…';
+
+  const annualize = document.getElementById('annualize').checked;
+  const combinedByRoute = {};
+  const combinedRouteName = {};
+  let totalKm = 0;
+  let totalDays = 0;
+
+  try{
+    for(const entry of valid){
+      statusEl.textContent = `a processar ${entry.name}…`;
+      const r = await processFile(entry);
+      Object.assign(combinedRouteName, r.routeName);
+      let factor = 1;
+      if(annualize && r.days > 0) factor = 365 / r.days;
+      for(const routeId in r.byRoute){
+        combinedByRoute[routeId] = (combinedByRoute[routeId] || 0) + r.byRoute[routeId] * factor;
+      }
+      totalKm += r.totalKm * factor;
+      totalDays += r.days;
+    }
+
+    results = { byRoute: combinedByRoute, routeName: combinedRouteName, totalKm, totalDays };
+    renderResults();
+    statusEl.textContent = `cálculo concluído · ${valid.length} ficheiro(s) processado(s)`;
+  }catch(err){
+    console.error(err);
+    statusEl.textContent = 'erro: ' + err.message;
+  }
+  calcBtn.disabled = false;
+});
+
+function renderResults(){
+  document.getElementById('totalKm').textContent = Math.round(results.totalKm).toLocaleString('pt-PT') + ' km';
+  document.getElementById('totalKm').classList.remove('pending');
+  document.getElementById('totalKm').classList.add('ok');
+  document.getElementById('totalKmSub').textContent = document.getElementById('annualize').checked ? 'anualizado' : 'período carregado';
+
+  document.getElementById('totalDays').textContent = results.totalDays + ' dias';
+  document.getElementById('totalDays').classList.remove('pending');
+  document.getElementById('totalDaysSub').textContent = state.files.length + ' ficheiro(s)';
+
+  const pct = Math.min(100, (results.totalDays/365)*100);
+  document.getElementById('yearCoverage').textContent = pct.toFixed(0) + '%';
+  document.getElementById('yearCoverage').classList.remove('pending');
+  document.getElementById('yearCoverageSub').textContent = 'de 365 dias';
+
+  exportBtn.style.display = 'inline-block';
+  renderTable();
+  updateContractPanel();
+}
+
+function renderTable(){
+  const rows = Object.keys(results.byRoute).map(routeId => ({
+    routeId,
+    name: results.routeName[routeId] || routeId,
+    km: results.byRoute[routeId],
+  }));
+
+  rows.sort((a,b) => {
+    let va = sortKey === 'km' ? a.km : a.name;
+    let vb = sortKey === 'km' ? b.km : b.name;
+    if(typeof va === 'string') { va = va.toLowerCase(); vb = vb.toLowerCase(); }
+    if(va < vb) return sortDir === 'asc' ? -1 : 1;
+    if(va > vb) return sortDir === 'asc' ? 1 : -1;
+    return 0;
+  });
+
+  const total = rows.reduce((a,r)=>a+r.km, 0);
+
+  let html = `<table>
+    <thead><tr>
+      <th data-key="name">Linha</th>
+      <th class="num" data-key="km">Km de serviço</th>
+    </tr></thead><tbody>`;
+  for(const r of rows){
+    html += `<tr><td class="route">${escapeHtml(r.name)}</td><td class="num">${Math.round(r.km).toLocaleString('pt-PT')}</td></tr>`;
+  }
+  html += `</tbody><tfoot><tr><td>Total</td><td class="num">${Math.round(total).toLocaleString('pt-PT')}</td></tr></tfoot></table>`;
+  resultsWrap.innerHTML = html;
+
+  resultsWrap.querySelectorAll('th[data-key]').forEach(th => {
+    th.addEventListener('click', () => {
+      const key = th.dataset.key;
+      if(sortKey === key) sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+      else { sortKey = key; sortDir = 'desc'; }
+      renderTable();
+    });
+  });
+}
+
+exportBtn.addEventListener('click', () => {
+  if(!results) return;
+  const rows = Object.keys(results.byRoute).map(routeId => ({
+    linha: results.routeName[routeId] || routeId,
+    km: results.byRoute[routeId].toFixed(2),
+  }));
+  const csv = Papa.unparse(rows);
+  const blob = new Blob([csv], { type:'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'km_por_linha.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+});
+
+// ---- Contract execution ----
+const contractedKmInput = document.getElementById('contractedKm');
+const contractPctEl = document.getElementById('contractPct');
+const contractPctSub = document.getElementById('contractPctSub');
+
+// Km contratualizados do caderno de encargos (válidos para toda a concessão,
+// não mudam por ano — atualiza aqui apenas se o contrato for revisto).
+const LOTES_CADERNO_ENCARGOS = [
+  { lote: 1, km: 2427444.11934 },
+  { lote: 2, km: 2578392.204084 },
+  { lote: 3, km: 1100763.1321129994 },
+  { lote: 4, km: 2246586.2433850016 },
+];
+
+function updateContractPanel(){
+  const contracted = parseFloat(contractedKmInput.value);
+  if(!results || !contracted || contracted <= 0){
+    contractPctEl.textContent = '— — —';
+    contractPctEl.className = 'flap-value pending';
+    contractPctSub.textContent = 'define o km contratualizado abaixo';
+    return;
+  }
+  const pct = (results.totalKm / contracted) * 100;
+  contractPctEl.textContent = pct.toFixed(1) + '%';
+  contractPctEl.className = 'flap-value ' + (Math.abs(pct - 100) <= 10 ? 'ok' : 'warn-val');
+  contractPctSub.textContent = Math.round(results.totalKm).toLocaleString('pt-PT') + ' / ' + Math.round(contracted).toLocaleString('pt-PT') + ' km';
+}
+contractedKmInput.addEventListener('input', updateContractPanel);
+
+// ---- Import reference table (xlsx/csv) with Lote + contracted km ----
+const loteSelect = document.getElementById('loteSelect');
+const loteTag = document.getElementById('loteTag');
+
+function populateLoteSelect(lotes, sourceLabel){
+  loteSelect.innerHTML = '<option value="">— escolhe o lote —</option>' +
+    lotes.map((l, i) => `<option value="${i}">Lote ${l.lote} — ${Math.round(l.km).toLocaleString('pt-PT')} km</option>`).join('');
+  loteSelect.style.display = 'inline-block';
+  loteSelect.dataset.lotes = JSON.stringify(lotes);
+  loteTag.textContent = sourceLabel;
+}
+
+// pré-carrega os valores do caderno de encargos ao abrir a página
+populateLoteSelect(LOTES_CADERNO_ENCARGOS, 'valores do caderno de encargos (fixos para a concessão)');
+
+loteSelect.addEventListener('change', () => {
+  const lotes = JSON.parse(loteSelect.dataset.lotes || '[]');
+  const idx = loteSelect.value;
+  if(idx === '') return;
+  contractedKmInput.value = Math.round(lotes[idx].km);
+  updateContractPanel();
+});
+</script>
+</body>
+</html>
