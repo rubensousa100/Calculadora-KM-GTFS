@@ -78,10 +78,13 @@
     padding:28px;
     margin-bottom:36px;
     display:grid;
-    grid-template-columns:repeat(3,1fr);
+    grid-template-columns:repeat(4,1fr);
     gap:20px;
   }
+  @media(max-width:900px){ .board{grid-template-columns:repeat(2,1fr);} }
   @media(max-width:640px){ .board{grid-template-columns:1fr;} }
+
+  .flap-value.warn-val{color:var(--coral);border-color:rgba(255,107,94,0.35);}
 
   .flap-cell{text-align:left;}
   .flap-label{
@@ -304,6 +307,69 @@
     text-align:center;
   }
 
+  /* ---- Contract section ---- */
+  .contract-box{
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:12px;
+    padding:20px 22px;
+    margin-bottom:28px;
+  }
+  .contract-box h3{
+    font-family:'Space Grotesk',sans-serif;
+    font-size:15px;
+    margin:0 0 4px;
+  }
+  .contract-box .hint{
+    color:var(--muted);
+    font-size:13px;
+    margin:0 0 16px;
+  }
+  .contract-row{
+    display:flex;
+    align-items:center;
+    gap:14px;
+    flex-wrap:wrap;
+  }
+  .contract-row label{
+    font-family:'JetBrains Mono',monospace;
+    font-size:12px;
+    color:var(--muted);
+    text-transform:uppercase;
+    letter-spacing:0.06em;
+  }
+  .contract-row input[type=number]{
+    background:var(--slat);
+    border:1px solid var(--slat-edge);
+    color:var(--text);
+    font-family:'JetBrains Mono',monospace;
+    font-size:14px;
+    padding:9px 12px;
+    border-radius:7px;
+    width:180px;
+  }
+  .contract-row select{
+    background:var(--slat);
+    border:1px solid var(--slat-edge);
+    color:var(--text);
+    font-family:'Inter',sans-serif;
+    font-size:13px;
+    padding:9px 10px;
+    border-radius:7px;
+  }
+  .contract-import{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    margin-left:auto;
+  }
+  .contract-import input[type=file]{display:none;}
+  .lote-tag{
+    font-family:'JetBrains Mono',monospace;
+    font-size:11.5px;
+    color:var(--muted);
+  }
+
   footer{
     margin-top:60px;
     padding-top:24px;
@@ -341,6 +407,24 @@
       <div class="flap-label">Cobertura do ano</div>
       <div class="flap-value pending" id="yearCoverage">— — —</div>
       <div class="flap-sub" id="yearCoverageSub">de 365 dias</div>
+    </div>
+    <div class="flap-cell">
+      <div class="flap-label">Execução do contrato</div>
+      <div class="flap-value pending" id="contractPct">— — —</div>
+      <div class="flap-sub" id="contractPctSub">define o km contratualizado abaixo</div>
+    </div>
+  </div>
+
+  <div class="contract-box">
+    <h3>Km contratualizado</h3>
+    <p class="hint">Os valores por Lote já vêm pré-carregados do caderno de encargos (fixos para toda a concessão). Escolhe o Lote, ou insere manualmente outro valor.</p>
+    <div class="contract-row">
+      <label>Km/ano contratado</label>
+      <input type="number" id="contractedKm" placeholder="ex: 1740063">
+      <div class="contract-import">
+        <span class="lote-tag" id="loteTag"></span>
+        <select id="loteSelect" style="display:none;"></select>
+      </div>
     </div>
   </div>
 
@@ -747,6 +831,7 @@ function renderResults(){
 
   exportBtn.style.display = 'inline-block';
   renderTable();
+  updateContractPanel();
 }
 
 function renderTable(){
@@ -802,6 +887,58 @@ exportBtn.addEventListener('click', () => {
   a.download = 'km_por_linha.csv';
   a.click();
   URL.revokeObjectURL(url);
+});
+
+// ---- Contract execution ----
+const contractedKmInput = document.getElementById('contractedKm');
+const contractPctEl = document.getElementById('contractPct');
+const contractPctSub = document.getElementById('contractPctSub');
+
+// Km contratualizados do caderno de encargos (válidos para toda a concessão,
+// não mudam por ano — atualiza aqui apenas se o contrato for revisto).
+const LOTES_CADERNO_ENCARGOS = [
+  { lote: 1, km: 2427444.11934 },
+  { lote: 2, km: 2578392.204084 },
+  { lote: 3, km: 1100763.1321129994 },
+  { lote: 4, km: 2246586.2433850016 },
+];
+
+function updateContractPanel(){
+  const contracted = parseFloat(contractedKmInput.value);
+  if(!results || !contracted || contracted <= 0){
+    contractPctEl.textContent = '— — —';
+    contractPctEl.className = 'flap-value pending';
+    contractPctSub.textContent = 'define o km contratualizado abaixo';
+    return;
+  }
+  const pct = (results.totalKm / contracted) * 100;
+  contractPctEl.textContent = pct.toFixed(1) + '%';
+  contractPctEl.className = 'flap-value ' + (Math.abs(pct - 100) <= 10 ? 'ok' : 'warn-val');
+  contractPctSub.textContent = Math.round(results.totalKm).toLocaleString('pt-PT') + ' / ' + Math.round(contracted).toLocaleString('pt-PT') + ' km';
+}
+contractedKmInput.addEventListener('input', updateContractPanel);
+
+// ---- Import reference table (xlsx/csv) with Lote + contracted km ----
+const loteSelect = document.getElementById('loteSelect');
+const loteTag = document.getElementById('loteTag');
+
+function populateLoteSelect(lotes, sourceLabel){
+  loteSelect.innerHTML = '<option value="">— escolhe o lote —</option>' +
+    lotes.map((l, i) => `<option value="${i}">Lote ${l.lote} — ${Math.round(l.km).toLocaleString('pt-PT')} km</option>`).join('');
+  loteSelect.style.display = 'inline-block';
+  loteSelect.dataset.lotes = JSON.stringify(lotes);
+  loteTag.textContent = sourceLabel;
+}
+
+// pré-carrega os valores do caderno de encargos ao abrir a página
+populateLoteSelect(LOTES_CADERNO_ENCARGOS, 'valores do caderno de encargos (fixos para a concessão)');
+
+loteSelect.addEventListener('change', () => {
+  const lotes = JSON.parse(loteSelect.dataset.lotes || '[]');
+  const idx = loteSelect.value;
+  if(idx === '') return;
+  contractedKmInput.value = Math.round(lotes[idx].km);
+  updateContractPanel();
 });
 </script>
 </body>
