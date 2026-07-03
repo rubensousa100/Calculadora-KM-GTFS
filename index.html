@@ -205,6 +205,21 @@
   }
   .warn.show{display:block;}
 
+  .notice{
+    background:rgba(255,176,32,0.08);
+    border:1px solid rgba(255,176,32,0.35);
+    color:var(--amber);
+    padding:12px 16px;
+    border-radius:10px;
+    font-size:13.5px;
+    margin-bottom:20px;
+    display:none;
+  }
+  .notice.show{display:block;}
+
+  .ticket .meta.span-warn{color:var(--amber);}
+  .flap-sub.muted-warn{color:var(--amber);}
+
   .controls{
     display:flex;
     align-items:center;
@@ -435,6 +450,7 @@
   </div>
 
   <div class="warn" id="overlapWarn"></div>
+  <div class="notice" id="freqWarn"></div>
 
   <div class="tickets" id="tickets"></div>
 
@@ -473,6 +489,7 @@ const ticketsEl = document.getElementById('tickets');
 const calcBtn = document.getElementById('calcBtn');
 const statusEl = document.getElementById('status');
 const overlapWarn = document.getElementById('overlapWarn');
+const freqWarn = document.getElementById('freqWarn');
 const resultsWrap = document.getElementById('resultsWrap');
 const exportBtn = document.getElementById('exportBtn');
 
@@ -501,6 +518,9 @@ async function handleFiles(fileList){
       entry.endDate = range.end;
       entry.minDate = range.min;
       entry.maxDate = range.max;
+      entry.spanDays = daysBetween(range.start, range.end);
+      const freqRows = await readCsv(zip, 'frequencies.txt');
+      entry.hasFrequencies = !!(freqRows && freqRows.length > 0);
     }catch(err){
       entry.error = 'erro ao ler zip';
       console.error(err);
@@ -557,6 +577,11 @@ function toDateStr(yyyymmdd){
 function toGtfsDate(dateStr){
   return dateStr.replaceAll('-','');
 }
+function daysBetween(startStr, endStr){
+  const a = new Date(startStr + 'T00:00:00');
+  const b = new Date(endStr + 'T00:00:00');
+  return Math.round((b - a) / 86400000) + 1;
+}
 
 function renderTickets(){
   ticketsEl.innerHTML = '';
@@ -569,8 +594,15 @@ function renderTickets(){
       div.innerHTML = `<div class="fname">${escapeHtml(entry.name)}</div><div class="meta" style="color:var(--coral)">${entry.error}</div>
         <button class="remove" data-id="${entry.id}">×</button>`;
     } else {
+      const wide = entry.spanDays > 40;
+      const spanNote = wide
+        ? `<div class="meta span-warn">⚠ ${entry.spanDays} dias — confirma se é este o período pretendido (o feed pode ir além do mês)</div>`
+        : `<div class="meta">${entry.spanDays} dias</div>`;
+      const freqNote = entry.hasFrequencies
+        ? `<div class="meta span-warn">⚠ usa frequencies.txt — kms podem ficar subestimados</div>`
+        : '';
       div.innerHTML = `
-        <div class="fname">${escapeHtml(entry.name)}</div>
+        <div class="fname">${escapeHtml(entry.name)}${spanNote}${freqNote}</div>
         <div class="dates">
           <input type="date" class="start" data-id="${entry.id}" value="${entry.startDate}">
           <span class="meta">→</span>
@@ -592,15 +624,17 @@ function renderTickets(){
   ticketsEl.querySelectorAll('input.start').forEach(inp => {
     inp.addEventListener('change', () => {
       const e = state.files.find(f => f.id === inp.dataset.id);
-      if(e) e.startDate = inp.value;
+      if(e){ e.startDate = inp.value; e.spanDays = daysBetween(e.startDate, e.endDate); }
       checkOverlaps();
+      renderTickets();
     });
   });
   ticketsEl.querySelectorAll('input.end').forEach(inp => {
     inp.addEventListener('change', () => {
       const e = state.files.find(f => f.id === inp.dataset.id);
-      if(e) e.endDate = inp.value;
+      if(e){ e.endDate = inp.value; e.spanDays = daysBetween(e.startDate, e.endDate); }
       checkOverlaps();
+      renderTickets();
     });
   });
 }
@@ -670,22 +704,38 @@ async function processFile(entry){
     tripInfo[t.trip_id] = { route_id: t.route_id, service_id: t.service_id };
   }
 
-  // distance per trip via max shape_dist_traveled in stop_times
-  const tripDist = {};
+  // distance per trip via max shape_dist_traveled in stop_times (raw, native feed units)
+  const tripDistRaw = {};
   const tripsNeedingShape = new Set();
   for(const st of stopTimes){
     const tid = st.trip_id;
     const v = parseFloat(st.shape_dist_traveled);
     if(!isNaN(v)){
-      if(!(tid in tripDist) || v > tripDist[tid]) tripDist[tid] = v;
+      if(!(tid in tripDistRaw) || v > tripDistRaw[tid]) tripDistRaw[tid] = v;
     }
   }
   for(const tid in tripInfo){
-    if(!(tid in tripDist)) tripsNeedingShape.add(tid);
+    if(!(tid in tripDistRaw)) tripsNeedingShape.add(tid);
   }
 
-  // fallback: shape length from shapes.txt (haversine sum), mapped by shape_id
+  // Detect the unit ONLY from native shape_dist_traveled values (never mix in fallback
+  // values here — the haversine fallback below is always computed in km directly, so
+  // mixing it into the median would bias the unit detection and, worse, cause it to be
+  // divided by 1000 a second time if the feed itself turns out to already be in km).
+  const rawVals = Object.values(tripDistRaw).filter(v=>v>0);
+  rawVals.sort((a,b)=>a-b);
+  const median = rawVals.length ? rawVals[Math.floor(rawVals.length/2)] : 0;
+  const isMeters = median > 300; // typical bus/coach trip is a few km; if median > 300 assume meters
+  const unitDivisor = isMeters ? 1000 : 1;
+
+  // tripDistKm: final distance per trip, always in km
+  const tripDistKm = {};
+  for(const tid in tripDistRaw) tripDistKm[tid] = tripDistRaw[tid] / unitDivisor;
+
+  // fallback: shape length from shapes.txt (haversine sum, already in km), mapped by shape_id.
+  // Assigned directly in km — no unit conversion applied, since haversine() already returns km.
   let shapeLen = {};
+  let fallbackUsed = 0;
   if(tripsNeedingShape.size > 0 && shapes){
     const byShape = {};
     for(const s of shapes){
@@ -704,17 +754,10 @@ async function processFile(entry){
     for(const t of trips) tripShape[t.trip_id] = t.shape_id;
     for(const tid of tripsNeedingShape){
       const sid = tripShape[tid];
-      if(sid && shapeLen[sid] != null) tripDist[tid] = shapeLen[sid] * 1000; // store in meters to match unit below
+      if(sid && shapeLen[sid] != null){ tripDistKm[tid] = shapeLen[sid]; fallbackUsed++; }
     }
   }
-
-  // determine unit: GTFS shape_dist_traveled unit is whatever the feed uses (often km already, sometimes meters).
-  // Heuristic: if median value > 1000, assume meters; else assume km already.
-  const distVals = Object.values(tripDist).filter(v=>v>0);
-  distVals.sort((a,b)=>a-b);
-  const median = distVals.length ? distVals[Math.floor(distVals.length/2)] : 0;
-  const isMeters = median > 300; // typical bus trip is a few km; if median > 300 assume meters
-  const unitDivisor = isMeters ? 1000 : 1;
+  const noDistCount = Object.keys(tripInfo).length - Object.keys(tripDistKm).length;
 
   // service_id -> set of active date strings (yyyymmdd), restricted to entry period
   const periodStart = toGtfsDate(entry.startDate);
@@ -759,7 +802,7 @@ async function processFile(entry){
   const byRoute = {}; // route_id -> km
   for(const tid in tripInfo){
     const { route_id, service_id } = tripInfo[tid];
-    const dist = (tripDist[tid] || 0) / unitDivisor; // km
+    const dist = tripDistKm[tid] || 0; // already in km
     const days = activeDaysCount[service_id] || 0;
     if(dist <= 0 || days <= 0) continue;
     byRoute[route_id] = (byRoute[route_id] || 0) + dist * days;
@@ -767,7 +810,14 @@ async function processFile(entry){
 
   const totalKm = Object.values(byRoute).reduce((a,b)=>a+b, 0);
 
-  return { byRoute, routeName, totalKm, days: periodDays.length };
+  const frequencies = await readCsv(zip, 'frequencies.txt');
+  const hasFrequencies = !!(frequencies && frequencies.length > 0);
+
+  return {
+    byRoute, routeName, totalKm, days: periodDays.length,
+    unit: isMeters ? 'metros' : 'km (já nativo)',
+    fallbackUsed, noDistCount, hasFrequencies,
+  };
 }
 
 function haversine(p1, p2){
@@ -790,6 +840,9 @@ calcBtn.addEventListener('click', async () => {
   let totalKm = 0;
   let totalDays = 0;
 
+  const diagnostics = [];
+  const freqFiles = [];
+
   try{
     for(const entry of valid){
       statusEl.textContent = `a processar ${entry.name}…`;
@@ -802,11 +855,25 @@ calcBtn.addEventListener('click', async () => {
       }
       totalKm += r.totalKm * factor;
       totalDays += r.days;
+
+      let note = `${entry.name}: unidade detetada = ${r.unit}`;
+      if(r.fallbackUsed) note += ` · ${r.fallbackUsed} viagem(ns) calculada(s) via shapes.txt (sem shape_dist_traveled)`;
+      if(r.noDistCount) note += ` · ${r.noDistCount} viagem(ns) sem distância — ignoradas`;
+      diagnostics.push(note);
+      if(r.hasFrequencies) freqFiles.push(entry.name);
     }
 
     results = { byRoute: combinedByRoute, routeName: combinedRouteName, totalKm, totalDays };
     renderResults();
-    statusEl.textContent = `cálculo concluído · ${valid.length} ficheiro(s) processado(s)`;
+    statusEl.innerHTML = `cálculo concluído · ${valid.length} ficheiro(s) processado(s)<br>` +
+      diagnostics.map(d => `<span style="opacity:.75">${escapeHtml(d)}</span>`).join('<br>');
+
+    if(freqFiles.length){
+      freqWarn.classList.add('show');
+      freqWarn.innerHTML = `⚠️ ${freqFiles.map(escapeHtml).join(', ')} usa(m) frequencies.txt (viagens por frequência/headway). Este cálculo conta apenas os "moldes" de viagem em trips.txt e pode subestimar os kms reais nesse período.`;
+    } else {
+      freqWarn.classList.remove('show');
+    }
   }catch(err){
     console.error(err);
     statusEl.textContent = 'erro: ' + err.message;
@@ -911,12 +978,30 @@ function updateContractPanel(){
     contractPctSub.textContent = 'define o km contratualizado abaixo';
     return;
   }
+
+  const annualize = document.getElementById('annualize').checked;
+  const yearCoveragePct = (results.totalDays / 365) * 100;
+
+  // O km contratualizado é um valor ANUAL. Comparar um período parcial (ex: 1 mês)
+  // diretamente contra ele dá uma % baixa e alarmante que não reflete desvio real —
+  // só faz sentido comparar quando o carregado representa o ano completo, ou foi
+  // explicitamente anualizado.
+  if(!annualize && yearCoveragePct < 90){
+    contractPctEl.textContent = '— — —';
+    contractPctEl.className = 'flap-value pending';
+    contractPctSub.textContent = `cobertura de ${yearCoveragePct.toFixed(0)}% do ano — carrega os restantes meses ou ativa "anualizar" para comparar com o km/ano contratado`;
+    return;
+  }
+
   const pct = (results.totalKm / contracted) * 100;
   contractPctEl.textContent = pct.toFixed(1) + '%';
   contractPctEl.className = 'flap-value ' + (Math.abs(pct - 100) <= 10 ? 'ok' : 'warn-val');
   contractPctSub.textContent = Math.round(results.totalKm).toLocaleString('pt-PT') + ' / ' + Math.round(contracted).toLocaleString('pt-PT') + ' km';
 }
 contractedKmInput.addEventListener('input', updateContractPanel);
+document.getElementById('annualize').addEventListener('change', () => {
+  if(results) updateContractPanel();
+});
 
 // ---- Import reference table (xlsx/csv) with Lote + contracted km ----
 const loteSelect = document.getElementById('loteSelect');
