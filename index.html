@@ -922,8 +922,12 @@ calcBtn.addEventListener('click', async () => {
   calcBtn.disabled = false;
 });
 
+function fmtKm(n){
+  return n.toLocaleString('pt-PT', { minimumFractionDigits: 0, maximumFractionDigits: 20 });
+}
+
 function renderResults(){
-  document.getElementById('totalKm').textContent = Math.round(results.totalKm).toLocaleString('pt-PT') + ' km';
+  document.getElementById('totalKm').textContent = fmtKm(results.totalKm) + ' km';
   document.getElementById('totalKm').classList.remove('pending');
   document.getElementById('totalKm').classList.add('ok');
   document.getElementById('totalKmSub').textContent = document.getElementById('annualize').checked ? 'anualizado' : 'período carregado';
@@ -966,9 +970,9 @@ function renderTable(){
       <th class="num" data-key="km">Km de serviço</th>
     </tr></thead><tbody>`;
   for(const r of rows){
-    html += `<tr><td class="route">${escapeHtml(r.name)}</td><td class="num">${Math.round(r.km).toLocaleString('pt-PT')}</td></tr>`;
+    html += `<tr><td class="route">${escapeHtml(r.name)}</td><td class="num">${fmtKm(r.km)}</td></tr>`;
   }
-  html += `</tbody><tfoot><tr><td>Total</td><td class="num">${Math.round(total).toLocaleString('pt-PT')}</td></tr></tfoot></table>`;
+  html += `</tbody><tfoot><tr><td>Total</td><td class="num">${fmtKm(total)}</td></tr></tfoot></table>`;
   resultsWrap.innerHTML = html;
 
   resultsWrap.querySelectorAll('th[data-key]').forEach(th => {
@@ -1037,7 +1041,7 @@ function updateContractPanel(){
   const pct = (results.totalKm / contracted) * 100;
   contractPctEl.textContent = pct.toFixed(1) + '%';
   contractPctEl.className = 'flap-value ' + (Math.abs(pct - 100) <= 10 ? 'ok' : 'warn-val');
-  contractPctSub.textContent = Math.round(results.totalKm).toLocaleString('pt-PT') + ' / ' + Math.round(contracted).toLocaleString('pt-PT') + ' km';
+  contractPctSub.textContent = fmtKm(results.totalKm) + ' / ' + fmtKm(contracted) + ' km';
 }
 contractedKmInput.addEventListener('input', updateContractPanel);
 document.getElementById('annualize').addEventListener('change', () => {
@@ -1050,7 +1054,7 @@ const loteTag = document.getElementById('loteTag');
 
 function populateLoteSelect(lotes, sourceLabel){
   loteSelect.innerHTML = '<option value="">— escolhe o lote —</option>' +
-    lotes.map((l, i) => `<option value="${i}">Lote ${l.lote} — ${Math.round(l.km).toLocaleString('pt-PT')} km</option>`).join('');
+    lotes.map((l, i) => `<option value="${i}">Lote ${l.lote} — ${fmtKm(l.km)} km</option>`).join('');
   loteSelect.style.display = 'inline-block';
   loteSelect.dataset.lotes = JSON.stringify(lotes);
   loteTag.textContent = sourceLabel;
@@ -1063,7 +1067,7 @@ loteSelect.addEventListener('change', () => {
   const lotes = JSON.parse(loteSelect.dataset.lotes || '[]');
   const idx = loteSelect.value;
   if(idx === '') return;
-  contractedKmInput.value = Math.round(lotes[idx].km);
+  contractedKmInput.value = lotes[idx].km;
   updateContractPanel();
 });
 </script>
