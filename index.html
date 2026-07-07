@@ -704,39 +704,16 @@ async function processFile(entry){
     tripInfo[t.trip_id] = { route_id: t.route_id, service_id: t.service_id };
   }
 
-  // distance per trip via max shape_dist_traveled in stop_times (raw, native feed units)
-  const tripDistRaw = {};
-  const tripsNeedingShape = new Set();
-  for(const st of stopTimes){
-    const tid = st.trip_id;
-    const v = parseFloat(st.shape_dist_traveled);
-    if(!isNaN(v)){
-      if(!(tid in tripDistRaw) || v > tripDistRaw[tid]) tripDistRaw[tid] = v;
-    }
-  }
-  for(const tid in tripInfo){
-    if(!(tid in tripDistRaw)) tripsNeedingShape.add(tid);
-  }
+  // Primary distance source: shapes.txt, summed with the WGS84 ellipsoidal (Vincenty)
+  // geodesic — this matches the official/expected km totals far more closely than
+  // either a spherical haversine sum or the feed's own shape_dist_traveled values
+  // (which in practice tend to overshoot, e.g. include extra garage/depot stretches
+  // or use a slightly different measuring method than the geodesic path).
+  const tripShape = {};
+  for(const t of trips) tripShape[t.trip_id] = t.shape_id;
 
-  // Detect the unit ONLY from native shape_dist_traveled values (never mix in fallback
-  // values here — the haversine fallback below is always computed in km directly, so
-  // mixing it into the median would bias the unit detection and, worse, cause it to be
-  // divided by 1000 a second time if the feed itself turns out to already be in km).
-  const rawVals = Object.values(tripDistRaw).filter(v=>v>0);
-  rawVals.sort((a,b)=>a-b);
-  const median = rawVals.length ? rawVals[Math.floor(rawVals.length/2)] : 0;
-  const isMeters = median > 300; // typical bus/coach trip is a few km; if median > 300 assume meters
-  const unitDivisor = isMeters ? 1000 : 1;
-
-  // tripDistKm: final distance per trip, always in km
-  const tripDistKm = {};
-  for(const tid in tripDistRaw) tripDistKm[tid] = tripDistRaw[tid] / unitDivisor;
-
-  // fallback: shape length from shapes.txt (haversine sum, already in km), mapped by shape_id.
-  // Assigned directly in km — no unit conversion applied, since haversine() already returns km.
-  let shapeLen = {};
-  let fallbackUsed = 0;
-  if(tripsNeedingShape.size > 0 && shapes){
+  let shapeLen = {}; // shape_id -> km, via Vincenty
+  if(shapes){
     const byShape = {};
     for(const s of shapes){
       const sid = s.shape_id;
@@ -746,15 +723,43 @@ async function processFile(entry){
     for(const sid in byShape){
       const pts = byShape[sid].sort((a,b)=>a.seq-b.seq);
       let len = 0;
-      for(let i=1;i<pts.length;i++) len += haversine(pts[i-1], pts[i]);
+      for(let i=1;i<pts.length;i++) len += vincenty(pts[i-1], pts[i]);
       shapeLen[sid] = len; // km
     }
-    // need trip -> shape_id
-    const tripShape = {};
-    for(const t of trips) tripShape[t.trip_id] = t.shape_id;
-    for(const tid of tripsNeedingShape){
-      const sid = tripShape[tid];
-      if(sid && shapeLen[sid] != null){ tripDistKm[tid] = shapeLen[sid]; fallbackUsed++; }
+  }
+
+  const tripDistKm = {};
+  const tripsNeedingFallback = new Set();
+  for(const tid in tripInfo){
+    const sid = tripShape[tid];
+    if(sid && shapeLen[sid] != null){
+      tripDistKm[tid] = shapeLen[sid];
+    } else {
+      tripsNeedingFallback.add(tid);
+    }
+  }
+
+  // Fallback: only for trips whose shape is missing/unusable, fall back to
+  // shape_dist_traveled from stop_times.txt (raw, native feed units).
+  let fallbackUsed = 0;
+  if(tripsNeedingFallback.size > 0 && stopTimes){
+    const tripDistRaw = {};
+    for(const st of stopTimes){
+      const tid = st.trip_id;
+      if(!tripsNeedingFallback.has(tid)) continue;
+      const v = parseFloat(st.shape_dist_traveled);
+      if(!isNaN(v)){
+        if(!(tid in tripDistRaw) || v > tripDistRaw[tid]) tripDistRaw[tid] = v;
+      }
+    }
+    const rawVals = Object.values(tripDistRaw).filter(v=>v>0);
+    rawVals.sort((a,b)=>a-b);
+    const median = rawVals.length ? rawVals[Math.floor(rawVals.length/2)] : 0;
+    const isMeters = median > 300; // typical bus/coach trip is a few km; if median > 300 assume meters
+    const unitDivisor = isMeters ? 1000 : 1;
+    for(const tid in tripDistRaw){
+      tripDistKm[tid] = tripDistRaw[tid] / unitDivisor;
+      fallbackUsed++;
     }
   }
   const noDistCount = Object.keys(tripInfo).length - Object.keys(tripDistKm).length;
@@ -815,17 +820,53 @@ async function processFile(entry){
 
   return {
     byRoute, routeName, totalKm, days: periodDays.length,
-    unit: isMeters ? 'metros' : 'km (já nativo)',
+    unit: 'shapes.txt (geodésica WGS84)',
     fallbackUsed, noDistCount, hasFrequencies,
   };
 }
 
-function haversine(p1, p2){
-  const R = 6371; // km
-  const dLat = (p2.lat - p1.lat) * Math.PI/180;
-  const dLon = (p2.lon - p1.lon) * Math.PI/180;
-  const a = Math.sin(dLat/2)**2 + Math.cos(p1.lat*Math.PI/180)*Math.cos(p2.lat*Math.PI/180)*Math.sin(dLon/2)**2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+// Distância geodésica entre dois pontos no elipsoide WGS84 (fórmula de Vincenty).
+// Mais precisa que uma soma de Haversine (esfera) e é a que reproduz os totais de
+// km corretos/esperados para os feeds GTFS testados.
+function vincenty(p1, p2){
+  const a = 6378137.0;           // raio equatorial WGS84 (m)
+  const f = 1 / 298.257223563;   // achatamento WGS84
+  const b = (1 - f) * a;
+  const L = (p2.lon - p1.lon) * Math.PI / 180;
+  const U1 = Math.atan((1 - f) * Math.tan(p1.lat * Math.PI / 180));
+  const U2 = Math.atan((1 - f) * Math.tan(p2.lat * Math.PI / 180));
+  const sinU1 = Math.sin(U1), cosU1 = Math.cos(U1);
+  const sinU2 = Math.sin(U2), cosU2 = Math.cos(U2);
+
+  let lambda = L, lambdaPrev, iterLimit = 200;
+  let sinSigma, cosSigma, sigma, sinAlpha, cosSqAlpha, cos2SigmaM;
+
+  do {
+    const sinLambda = Math.sin(lambda), cosLambda = Math.cos(lambda);
+    sinSigma = Math.sqrt(
+      (cosU2 * sinLambda) ** 2 +
+      (cosU1 * sinU2 - sinU1 * cosU2 * cosLambda) ** 2
+    );
+    if(sinSigma === 0) return 0; // pontos coincidentes
+    cosSigma = sinU1 * sinU2 + cosU1 * cosU2 * cosLambda;
+    sigma = Math.atan2(sinSigma, cosSigma);
+    sinAlpha = cosU1 * cosU2 * sinLambda / sinSigma;
+    cosSqAlpha = 1 - sinAlpha ** 2;
+    cos2SigmaM = cosSqAlpha !== 0 ? cosSigma - 2 * sinU1 * sinU2 / cosSqAlpha : 0;
+    const C = f / 16 * cosSqAlpha * (4 + f * (4 - 3 * cosSqAlpha));
+    lambdaPrev = lambda;
+    lambda = L + (1 - C) * f * sinAlpha *
+      (sigma + C * sinSigma * (cos2SigmaM + C * cosSigma * (-1 + 2 * cos2SigmaM ** 2)));
+  } while(Math.abs(lambda - lambdaPrev) > 1e-12 && --iterLimit > 0);
+
+  const uSq = cosSqAlpha * (a ** 2 - b ** 2) / b ** 2;
+  const A = 1 + uSq / 16384 * (4096 + uSq * (-768 + uSq * (320 - 175 * uSq)));
+  const B = uSq / 1024 * (256 + uSq * (-128 + uSq * (74 - 47 * uSq)));
+  const deltaSigma = B * sinSigma * (cos2SigmaM + B / 4 * (cosSigma * (-1 + 2 * cos2SigmaM ** 2) -
+    B / 6 * cos2SigmaM * (-3 + 4 * sinSigma ** 2) * (-3 + 4 * cos2SigmaM ** 2)));
+  const s = b * A * (sigma - deltaSigma); // metros
+
+  return s / 1000; // km
 }
 
 calcBtn.addEventListener('click', async () => {
@@ -856,8 +897,8 @@ calcBtn.addEventListener('click', async () => {
       totalKm += r.totalKm * factor;
       totalDays += r.days;
 
-      let note = `${entry.name}: unidade detetada = ${r.unit}`;
-      if(r.fallbackUsed) note += ` · ${r.fallbackUsed} viagem(ns) calculada(s) via shapes.txt (sem shape_dist_traveled)`;
+      let note = `${entry.name}: distância = ${r.unit}`;
+      if(r.fallbackUsed) note += ` · ${r.fallbackUsed} viagem(ns) sem shape utilizável, calculada(s) via shape_dist_traveled`;
       if(r.noDistCount) note += ` · ${r.noDistCount} viagem(ns) sem distância — ignoradas`;
       diagnostics.push(note);
       if(r.hasFrequencies) freqFiles.push(entry.name);
