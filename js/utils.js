@@ -58,12 +58,12 @@ const Utils = Object.freeze({
   },
 
   /**
-   * Formata km para apresentação em pt-PT.
+   * Formata km para apresentação em pt-PT, sempre com 2 casas decimais.
    * @param {number} n
    * @returns {string}
    */
   fmtKm(n){
-    return n.toLocaleString('pt-PT', { minimumFractionDigits: 0, maximumFractionDigits: 20 });
+    return n.toLocaleString('pt-PT', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   },
 
   /**
