@@ -58,7 +58,7 @@ const Utils = Object.freeze({
   },
 
   /**
-   * Formata km para apresentação em pt-PT, sempre com 2 casas decimais.
+   * Com 2 casas decimais.
    * @param {number} n
    * @returns {string}
    */
